@@ -221,8 +221,8 @@ cp ~/.hermes/config.yaml /home/marimo/.hermes/config.yaml 2>/dev/null || true
 # 8. Deploy Marimo App
 if [ -f "$(dirname "$0")/app.py" ]; then
   cp "$(dirname "$0")/app.py" /marimo/app.py
-elif [ -n "$GH_TOKEN" ]; then
-  curl -fsSL -H "Authorization: token $GH_TOKEN" https://raw.githubusercontent.com/harshraj170304-ux/qwen-flash-blackwell-molab/main/app.py -o /marimo/app.py 2>/dev/null || true
+else
+  curl -fsSL https://raw.githubusercontent.com/harshraj170304-ux/qwen-flash-blackwell-molab/main/app.py -o /marimo/app.py 2>/dev/null || true
 fi
 
 echo ""
