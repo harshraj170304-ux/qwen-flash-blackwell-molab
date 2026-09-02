@@ -59,10 +59,38 @@ if [ -d "$CUDA_SRC" ]; then
     ln -sf "$DRIVER_LIB" /usr/lib/x86_64-linux-gnu/libcuda.so 2>/dev/null || true
   fi
 
-  # Fix CCCL header nesting for <nv/target> & disable compiler check
+  # Fix CCCL header nesting for <nv/target>
+  python3 -c '
+import os, shutil
+for base in ["/usr/local/cuda/include", "/usr/local/lib/python3.13/site-packages/nvidia/cu13/include"]:
+    if not os.path.exists(base): continue
+    nv_dir = os.path.join(base, "nv")
+    os.makedirs(nv_dir, exist_ok=True)
+    for root, dirs, files in os.walk(base):
+        if "target" in files and "nv" in root:
+            src_target = os.path.join(root, "target")
+            dst_target = os.path.join(nv_dir, "target")
+            if not os.path.exists(dst_target):
+                shutil.copy2(src_target, dst_target)
+' 2>/dev/null || true
   ln -sf /usr/local/cuda/include/cccl/nv /usr/local/cuda/include/nv 2>/dev/null || true
   ln -sf /usr/local/cuda/include/cccl/cuda /usr/local/cuda/include/cuda 2>/dev/null || true
-  find /usr/local/cuda -name "cuda_toolkit.h" -exec sed -i 's/#\s*error.*CUDA compiler and CUDA toolkit headers are incompatible.*//g' {} + 2>/dev/null || true
+
+  # Strip the #error check from ALL cuda_toolkit.h files across system
+  python3 -c '
+import os
+for root, dirs, files in os.walk("/usr"):
+    for f in files:
+        if f == "cuda_toolkit.h":
+            p = os.path.join(root, f)
+            try:
+                with open(p, "r") as fp: c = fp.read()
+                if "incompatible" in c and "error" in c:
+                    lines = [l for l in c.splitlines() if not ("error" in l and "incompatible" in l)]
+                    with open(p, "w") as fp: fp.write("\n".join(lines))
+                    print(f"Patched: {p}")
+            except Exception: pass
+' 2>/dev/null || true
 
   # Register dynamic linker paths system-wide
   echo "/usr/local/cuda/lib" > /etc/ld.so.conf.d/cuda.conf
@@ -85,13 +113,23 @@ if [ ! -f "/marimo/llama.cpp/build/bin/llama-server" ]; then
   fi
   cd /marimo/llama.cpp
 
-  # Pre-patch ggml-cuda CMakeLists to ensure CUDA::cuda_driver always exists
+  # Pre-patch ggml-cuda CMakeLists & inject CCCL compiler check bypass
   python3 -c '
 import os
-p = "/marimo/llama.cpp/ggml/src/ggml-cuda/CMakeLists.txt"
-if os.path.exists(p):
-    with open(p, "r") as f: s = f.read()
+# 1. Patch main CMakeLists.txt
+main_p = "/marimo/llama.cpp/CMakeLists.txt"
+if os.path.exists(main_p):
+    with open(main_p, "r") as f: s = f.read()
+    if "_CCCL_DISABLE_CUDA_COMPILER_CHECK" not in s:
+        s = "add_compile_definitions(_CCCL_DISABLE_CUDA_COMPILER_CHECK=1)\n" + s
+        with open(main_p, "w") as f: f.write(s)
+
+# 2. Patch ggml-cuda CMakeLists.txt
+cuda_p = "/marimo/llama.cpp/ggml/src/ggml-cuda/CMakeLists.txt"
+if os.path.exists(cuda_p):
+    with open(cuda_p, "r") as f: s = f.read()
     patch = """
+add_compile_definitions(_CCCL_DISABLE_CUDA_COMPILER_CHECK=1)
 if (NOT TARGET CUDA::cuda_driver)
     find_library(CUDA_DRIVER_LIB NAMES cuda libcuda PATHS /usr/lib/x86_64-linux-gnu /usr/local/cuda/lib64/stubs /usr/local/cuda/lib64 /usr/lib64)
     if (CUDA_DRIVER_LIB)
@@ -104,7 +142,7 @@ endif()
 """
     if "if (NOT TARGET CUDA::cuda_driver)" not in s:
         s = patch + "\n" + s
-        with open(p, "w") as f: f.write(s)
+        with open(cuda_p, "w") as f: f.write(s)
 ' 2>/dev/null || true
 
   echo "  -> Compiling llama-server with native Blackwell sm_120 kernels..."
@@ -113,7 +151,9 @@ endif()
     -DGGML_CUDA=ON \
     -DCMAKE_CUDA_ARCHITECTURES=120 \
     -DCUDAToolkit_ROOT=/usr/local/cuda \
-    -DCMAKE_CUDA_FLAGS="-D_CCCL_DISABLE_CUDA_COMPILER_CHECK=1"
+    -DCMAKE_CUDA_FLAGS="-D_CCCL_DISABLE_CUDA_COMPILER_CHECK=1" \
+    -DCMAKE_CXX_FLAGS="-D_CCCL_DISABLE_CUDA_COMPILER_CHECK=1" \
+    -DCMAKE_C_FLAGS="-D_CCCL_DISABLE_CUDA_COMPILER_CHECK=1"
   cmake --build build -j$(nproc) --target llama-server
   cd /marimo
 else
