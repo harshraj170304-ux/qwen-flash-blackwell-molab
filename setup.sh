@@ -51,15 +51,16 @@ if [ -d "/usr/local/cuda/lib" ]; then
   cd /marimo
 fi
 
-# Fix libcuda.so (CUDA Driver target) for CMake FindCUDAToolkit
-DRIVER_LIB=$(find /usr/lib /usr/local -name "libcuda.so.1" -o -name "libcuda.so" 2>/dev/null | head -n 1)
-if [ -n "$DRIVER_LIB" ]; then
-  mkdir -p /usr/local/cuda/lib64/stubs /usr/local/cuda/lib/stubs /usr/lib/x86_64-linux-gnu
-  ln -sf "$DRIVER_LIB" /usr/local/cuda/lib64/stubs/libcuda.so 2>/dev/null || true
-  ln -sf "$DRIVER_LIB" /usr/local/cuda/lib/stubs/libcuda.so 2>/dev/null || true
-  ln -sf "$DRIVER_LIB" /usr/local/cuda/lib64/libcuda.so 2>/dev/null || true
-  ln -sf "$DRIVER_LIB" /usr/local/cuda/lib/libcuda.so 2>/dev/null || true
+# Fix libcuda.so (CUDA Driver target) without self-referencing symlinks
+rm -f /usr/lib/x86_64-linux-gnu/libcuda.so /usr/local/cuda/lib64/libcuda.so /usr/local/cuda/lib64/stubs/libcuda.so 2>/dev/null || true
+DRIVER_LIB=$(find /usr/lib /usr/local -type f -name "libcuda.so*" 2>/dev/null | head -n 1)
+[ -z "$DRIVER_LIB" ] && DRIVER_LIB="/usr/lib/x86_64-linux-gnu/libcuda.so.1"
+
+if [ -e "$DRIVER_LIB" ]; then
+  mkdir -p /usr/local/cuda/lib64/stubs /usr/lib/x86_64-linux-gnu
   ln -sf "$DRIVER_LIB" /usr/lib/x86_64-linux-gnu/libcuda.so 2>/dev/null || true
+  ln -sf "$DRIVER_LIB" /usr/local/cuda/lib64/stubs/libcuda.so 2>/dev/null || true
+  ln -sf "$DRIVER_LIB" /usr/local/cuda/lib64/libcuda.so 2>/dev/null || true
 fi
 
 # Fix CCCL header nesting for <nv/target>
@@ -172,9 +173,7 @@ endif()
     -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc \
     -DCMAKE_CUDA_FLAGS="-D_CCCL_DISABLE_CUDA_COMPILER_CHECK=1" \
     -DCMAKE_CXX_FLAGS="-D_CCCL_DISABLE_CUDA_COMPILER_CHECK=1" \
-    -DCMAKE_C_FLAGS="-D_CCCL_DISABLE_CUDA_COMPILER_CHECK=1" \
-    -DCMAKE_EXE_LINKER_FLAGS="-L/usr/lib/x86_64-linux-gnu -L/usr/local/cuda/lib64 -lcuda" \
-    -DCMAKE_SHARED_LINKER_FLAGS="-L/usr/lib/x86_64-linux-gnu -L/usr/local/cuda/lib64 -lcuda"
+    -DCMAKE_C_FLAGS="-D_CCCL_DISABLE_CUDA_COMPILER_CHECK=1"
   cmake --build build -j$(nproc) --target llama-server
   cd /marimo
 else
