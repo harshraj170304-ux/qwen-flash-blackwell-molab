@@ -140,23 +140,23 @@ if os.path.exists(main_p):
         s = "add_compile_definitions(_CCCL_DISABLE_CUDA_COMPILER_CHECK=1)\n" + s
         with open(main_p, "w") as f: f.write(s)
 
-# 2. Patch ggml-cuda CMakeLists.txt
+# 2. Patch ggml-cuda CMakeLists.txt to link real CUDA driver library
 cuda_p = "/marimo/llama.cpp/ggml/src/ggml-cuda/CMakeLists.txt"
 if os.path.exists(cuda_p):
     with open(cuda_p, "r") as f: s = f.read()
     patch = """
 add_compile_definitions(_CCCL_DISABLE_CUDA_COMPILER_CHECK=1)
-if (NOT TARGET CUDA::cuda_driver)
-    find_library(CUDA_DRIVER_LIB NAMES cuda libcuda PATHS /usr/lib/x86_64-linux-gnu /usr/local/cuda/lib64/stubs /usr/local/cuda/lib64 /usr/lib64)
-    if (CUDA_DRIVER_LIB)
+find_library(REAL_CUDA_DRIVER NAMES cuda libcuda.so.1 libcuda PATHS /usr/lib/x86_64-linux-gnu /usr/lib64 /usr/local/cuda/lib64 /usr/local/cuda/lib)
+if (REAL_CUDA_DRIVER)
+    message(STATUS "Explicitly linking ggml-cuda to driver: ${REAL_CUDA_DRIVER}")
+    if (NOT TARGET CUDA::cuda_driver)
         add_library(CUDA::cuda_driver UNKNOWN IMPORTED)
-        set_target_properties(CUDA::cuda_driver PROPERTIES IMPORTED_LOCATION "${CUDA_DRIVER_LIB}")
-    else()
-        add_library(CUDA::cuda_driver INTERFACE IMPORTED)
     endif()
+    set_target_properties(CUDA::cuda_driver PROPERTIES IMPORTED_LOCATION "${REAL_CUDA_DRIVER}")
+    link_libraries("${REAL_CUDA_DRIVER}")
 endif()
 """
-    if "if (NOT TARGET CUDA::cuda_driver)" not in s:
+    if "REAL_CUDA_DRIVER" not in s:
         s = patch + "\n" + s
         with open(cuda_p, "w") as f: f.write(s)
 ' 2>/dev/null || true
@@ -172,7 +172,9 @@ endif()
     -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc \
     -DCMAKE_CUDA_FLAGS="-D_CCCL_DISABLE_CUDA_COMPILER_CHECK=1" \
     -DCMAKE_CXX_FLAGS="-D_CCCL_DISABLE_CUDA_COMPILER_CHECK=1" \
-    -DCMAKE_C_FLAGS="-D_CCCL_DISABLE_CUDA_COMPILER_CHECK=1"
+    -DCMAKE_C_FLAGS="-D_CCCL_DISABLE_CUDA_COMPILER_CHECK=1" \
+    -DCMAKE_EXE_LINKER_FLAGS="-L/usr/lib/x86_64-linux-gnu -L/usr/local/cuda/lib64 -lcuda" \
+    -DCMAKE_SHARED_LINKER_FLAGS="-L/usr/lib/x86_64-linux-gnu -L/usr/local/cuda/lib64 -lcuda"
   cmake --build build -j$(nproc) --target llama-server
   cd /marimo
 else
