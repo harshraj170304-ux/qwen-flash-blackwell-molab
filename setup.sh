@@ -130,36 +130,15 @@ if [ ! -f "/marimo/llama.cpp/build/bin/llama-server" ]; then
   fi
   cd /marimo/llama.cpp
 
-  # Pre-patch ggml-cuda CMakeLists & inject CCCL compiler check bypass
+  # Inject CCCL compiler check bypass into main CMakeLists.txt
   python3 -c '
 import os
-# 1. Patch main CMakeLists.txt
 main_p = "/marimo/llama.cpp/CMakeLists.txt"
 if os.path.exists(main_p):
     with open(main_p, "r") as f: s = f.read()
     if "_CCCL_DISABLE_CUDA_COMPILER_CHECK" not in s:
         s = "add_compile_definitions(_CCCL_DISABLE_CUDA_COMPILER_CHECK=1)\n" + s
         with open(main_p, "w") as f: f.write(s)
-
-# 2. Patch ggml-cuda CMakeLists.txt to link real CUDA driver library
-cuda_p = "/marimo/llama.cpp/ggml/src/ggml-cuda/CMakeLists.txt"
-if os.path.exists(cuda_p):
-    with open(cuda_p, "r") as f: s = f.read()
-    patch = """
-add_compile_definitions(_CCCL_DISABLE_CUDA_COMPILER_CHECK=1)
-find_library(REAL_CUDA_DRIVER NAMES cuda libcuda.so.1 libcuda PATHS /usr/lib/x86_64-linux-gnu /usr/lib64 /usr/local/cuda/lib64 /usr/local/cuda/lib)
-if (REAL_CUDA_DRIVER)
-    message(STATUS "Explicitly linking ggml-cuda to driver: ${REAL_CUDA_DRIVER}")
-    if (NOT TARGET CUDA::cuda_driver)
-        add_library(CUDA::cuda_driver UNKNOWN IMPORTED)
-    endif()
-    set_target_properties(CUDA::cuda_driver PROPERTIES IMPORTED_LOCATION "${REAL_CUDA_DRIVER}")
-    link_libraries("${REAL_CUDA_DRIVER}")
-endif()
-"""
-    if "REAL_CUDA_DRIVER" not in s:
-        s = patch + "\n" + s
-        with open(cuda_p, "w") as f: f.write(s)
 ' 2>/dev/null || true
 
   echo "  -> Compiling llama-server with native Blackwell sm_120 kernels..."
