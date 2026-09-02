@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env bash
+#!/usr/bin/env bash
 set -e
 
 echo "=========================================================================="
@@ -28,13 +28,17 @@ echo "⚙️ [2/6] Installing Python inference & agent libraries..."
 pip install -q -U "huggingface_hub[cli]" hf_transfer nvidia-cuda-cccl openai rich pydantic httpx marimo 2>/dev/null || true
 
 # 3. Setup CUDA Unified Directory, Headers & Dynamic Linker
-echo "🔧 [3/6] Setting up CUDA 13 Blackwell toolkit links & CCCL headers..."
+echo "🔧 [3/6] Setting up CUDA 13 Blackwell toolkit links, CCCL headers & libcuda driver..."
 CUDA_SRC=$(python3 -c "import nvidia.cu13, os; print(os.path.dirname(nvidia.cu13.__file__))" 2>/dev/null || echo "/usr/local/lib/python3.13/site-packages/nvidia/cu13")
 
 if [ -d "$CUDA_SRC" ]; then
   rm -rf /usr/local/cuda
   ln -sf "$CUDA_SRC" /usr/local/cuda
   ln -sf /usr/local/cuda/lib /usr/local/cuda/lib64 2>/dev/null || true
+
+  # Link NVVM compiler directory (provides cicc & libdevice for nvcc)
+  NVVM_DIR=$(find /usr/local/lib/python3* /usr/local -type d -name nvvm 2>/dev/null | head -n 1)
+  [ -n "$NVVM_DIR" ] && ln -sf "$NVVM_DIR" /usr/local/cuda/nvvm 2>/dev/null || true
 
   # Create unversioned .so symlinks for CMake FindCUDAToolkit
   cd /usr/local/cuda/lib 2>/dev/null || true
@@ -43,6 +47,17 @@ if [ -d "$CUDA_SRC" ]; then
     [ ! -e "$base" ] && ln -sf "$f" "$base" 2>/dev/null || true
   done
   cd /marimo
+
+  # Fix libcuda.so (CUDA Driver target) for CMake FindCUDAToolkit
+  DRIVER_LIB=$(find /usr/lib /usr/local -name "libcuda.so.1" -o -name "libcuda.so" 2>/dev/null | head -n 1)
+  if [ -n "$DRIVER_LIB" ]; then
+    mkdir -p /usr/local/cuda/lib64/stubs /usr/local/cuda/lib/stubs /usr/lib/x86_64-linux-gnu
+    ln -sf "$DRIVER_LIB" /usr/local/cuda/lib64/stubs/libcuda.so 2>/dev/null || true
+    ln -sf "$DRIVER_LIB" /usr/local/cuda/lib/stubs/libcuda.so 2>/dev/null || true
+    ln -sf "$DRIVER_LIB" /usr/local/cuda/lib64/libcuda.so 2>/dev/null || true
+    ln -sf "$DRIVER_LIB" /usr/local/cuda/lib/libcuda.so 2>/dev/null || true
+    ln -sf "$DRIVER_LIB" /usr/lib/x86_64-linux-gnu/libcuda.so 2>/dev/null || true
+  fi
 
   # Fix CCCL header nesting for <nv/target> & disable compiler check
   ln -sf /usr/local/cuda/include/cccl/nv /usr/local/cuda/include/nv 2>/dev/null || true
@@ -63,13 +78,41 @@ fi
 # 4. Compile llama.cpp for Blackwell sm_120 (Cached if present)
 echo "🔨 [4/6] Checking Blackwell-optimized llama-server (sm_120)..."
 if [ ! -f "/marimo/llama.cpp/build/bin/llama-server" ]; then
-  echo "  -> Compiling llama-server from danielhanchen/llama.cpp (qwen4exp branch)..."
-  rm -rf /marimo/llama.cpp
-  git clone -b qwen4exp/qwen3.8-flash-next --single-branch https://github.com/danielhanchen/llama.cpp.git /marimo/llama.cpp
+  echo "  -> Fetching danielhanchen/llama.cpp (qwen4exp branch)..."
+  if [ ! -d "/marimo/llama.cpp/.git" ]; then
+    rm -rf /marimo/llama.cpp
+    git clone -b qwen4exp/qwen3.8-flash-next --single-branch https://github.com/danielhanchen/llama.cpp.git /marimo/llama.cpp
+  fi
   cd /marimo/llama.cpp
+
+  # Pre-patch ggml-cuda CMakeLists to ensure CUDA::cuda_driver always exists
+  python3 -c '
+import os
+p = "/marimo/llama.cpp/ggml/src/ggml-cuda/CMakeLists.txt"
+if os.path.exists(p):
+    with open(p, "r") as f: s = f.read()
+    patch = """
+if (NOT TARGET CUDA::cuda_driver)
+    find_library(CUDA_DRIVER_LIB NAMES cuda libcuda PATHS /usr/lib/x86_64-linux-gnu /usr/local/cuda/lib64/stubs /usr/local/cuda/lib64 /usr/lib64)
+    if (CUDA_DRIVER_LIB)
+        add_library(CUDA::cuda_driver UNKNOWN IMPORTED)
+        set_target_properties(CUDA::cuda_driver PROPERTIES IMPORTED_LOCATION "${CUDA_DRIVER_LIB}")
+    else()
+        add_library(CUDA::cuda_driver INTERFACE IMPORTED)
+    endif()
+endif()
+"""
+    if "if (NOT TARGET CUDA::cuda_driver)" not in s:
+        s = patch + "\n" + s
+        with open(p, "w") as f: f.write(s)
+' 2>/dev/null || true
+
+  echo "  -> Compiling llama-server with native Blackwell sm_120 kernels..."
+  rm -rf build
   cmake -B build \
     -DGGML_CUDA=ON \
     -DCMAKE_CUDA_ARCHITECTURES=120 \
+    -DCUDAToolkit_ROOT=/usr/local/cuda \
     -DCMAKE_CUDA_FLAGS="-D_CCCL_DISABLE_CUDA_COMPILER_CHECK=1"
   cmake --build build -j$(nproc) --target llama-server
   cd /marimo
