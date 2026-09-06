@@ -9,11 +9,12 @@ HF_TOKEN="${HF_TOKEN:-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}"
 export HF_TOKEN="$HF_TOKEN"
 export HF_HUB_ENABLE_HF_TRANSFER=1
 export HF_XET_HIGH_PERFORMANCE=1
-GH_TOKEN="${GH_TOKEN:-$GITHUB_TOKEN}"
+GH_TOKEN="${GH_TOKEN:-${GITHUB_TOKEN:-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}}"
+export GH_TOKEN="$GH_TOKEN"
 
 # 1. System packages & tmux configuration
-echo "📦 [1/6] Installing system tools (tmux, cmake, git, build-essential, curl, wget, aria2)..."
-apt-get update -qq && apt-get install -y -qq tmux cmake build-essential git libcurl4-openssl-dev aria2 curl wget 2>/dev/null || true
+echo "📦 [1/6] Installing system tools (tmux, cmake, git, build-essential, curl, wget, aria2, sqlite3)..."
+apt-get update -qq && apt-get install -y -qq tmux cmake build-essential git libcurl4-openssl-dev aria2 curl wget sqlite3 2>/dev/null || true
 
 cat << 'EOF' > ~/.tmux.conf
 set -g mouse on
@@ -198,11 +199,47 @@ tmux new-session -d -s qwen "bash -c '
   exec bash
 '"
 
-# 7. Configure Nous Research Hermes Agent
-echo "🏛️ Setting up Nous Research Hermes Agent..."
+# 7. Restore Hermes Memory, Sessions & 2-Way Auto-Backup Engine
+echo "🏛️ [7/8] Setting up Hermes Agent & Restoring Permanent Memory from GitHub..."
 pip install -q hermes-agent 2>/dev/null || true
-mkdir -p ~/.hermes ~/.config/hermes /root/.hermes /home/marimo/.hermes 2>/dev/null || true
 
+GITHUB_USER="harshraj170304-ux"
+MEMORY_REPO="${MEMORY_REPO:-https://${GH_TOKEN}@github.com/${GITHUB_USER}/hermes-molab.git}"
+BACKUP_DIR="/tmp/hermes_repo"
+
+mkdir -p /root/.hermes /home/marimo/.hermes ~/.hermes ~/.config/hermes /marimo/storage
+
+# Pull latest persistent memory from GitHub
+if [ ! -d "$BACKUP_DIR/.git" ]; then
+  echo "  -> Fetching sessions & state database from $GITHUB_USER/hermes-molab..."
+  git clone "$MEMORY_REPO" "$BACKUP_DIR" 2>/dev/null || true
+else
+  cd "$BACKUP_DIR"
+  git pull --rebase origin main 2>/dev/null || true
+  cd /marimo
+fi
+
+# Restore files into Hermes config directories
+if [ -d "$BACKUP_DIR/hermes_data" ]; then
+  cp -rf "$BACKUP_DIR"/hermes_data/* "$BACKUP_DIR"/hermes_data/.* /home/marimo/.hermes/ 2>/dev/null || true
+  cp -rf "$BACKUP_DIR"/hermes_data/* "$BACKUP_DIR"/hermes_data/.* /root/.hermes/ 2>/dev/null || true
+  cp -rf "$BACKUP_DIR"/hermes_data/* "$BACKUP_DIR"/hermes_data/.* ~/.hermes/ 2>/dev/null || true
+  echo "  ✅ Restored Hermes state.db, SOUL.md, MEMORY.md, and past sessions!"
+fi
+
+# Ensure SQLite integrity & truncate WAL so queries don't fail
+python3 -c '
+import sqlite3, os
+for db_path in ["/home/marimo/.hermes/state.db", "/root/.hermes/state.db", os.path.expanduser("~/.hermes/state.db")]:
+    if os.path.isfile(db_path):
+        try:
+            conn = sqlite3.connect(db_path)
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+            conn.close()
+        except Exception: pass
+' 2>/dev/null || true
+
+# Configure Hermes local endpoint on Port 8085
 cat << 'HERMES_CFG' > ~/.hermes/config.yaml
 provider: custom
 base_url: "http://127.0.0.1:8085/v1"
@@ -211,14 +248,68 @@ model: "Qwen3.8-Flash-Next-Uncensored"
 context_length: 262144
 max_tokens: 65536
 temperature: 0.2
-system_prompt: "You are Hermes Agent, an autonomous AI engineer on an NVIDIA Blackwell system."
+system_prompt: "You are Hermes Agent, an autonomous AI engineer on an NVIDIA Blackwell system. You have persistent memory across notebook restarts."
 HERMES_CFG
 
 cp ~/.hermes/config.yaml ~/.config/hermes/config.yaml 2>/dev/null || true
 cp ~/.hermes/config.yaml /root/.hermes/config.yaml 2>/dev/null || true
 cp ~/.hermes/config.yaml /home/marimo/.hermes/config.yaml 2>/dev/null || true
+chmod -R 777 /home/marimo/.hermes /root/.hermes ~/.hermes 2>/dev/null || true
+chown -R marimo:marimo /home/marimo/.hermes 2>/dev/null || true
+
+# Install hermes-sync CLI tool
+cat << 'SYNC_SCRIPT' > /usr/local/bin/hermes-sync
+#!/usr/bin/env bash
+BACKUP_DIR="/tmp/hermes_repo"
+[ ! -d "$BACKUP_DIR" ] && exit 0
+
+mkdir -p "$BACKUP_DIR/hermes_data"
+
+# Checkpoint SQLite WAL
+python3 -c '
+import sqlite3, os
+for p in ["/home/marimo/.hermes/state.db", "/root/.hermes/state.db", os.path.expanduser("~/.hermes/state.db")]:
+    if os.path.isfile(p):
+        try:
+            conn = sqlite3.connect(p)
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+            conn.close()
+        except Exception: pass
+' 2>/dev/null || true
+
+# Copy all active Hermes state files
+for dir in /home/marimo/.hermes /root/.hermes ~/.hermes; do
+  if [ -d "$dir" ]; then
+    cp -rf "$dir"/* "$dir"/.* "$BACKUP_DIR/hermes_data/" 2>/dev/null || true
+  fi
+done
+
+cd "$BACKUP_DIR"
+git config user.name 'harshraj170304-ux'
+git config user.email 'harshraj170304@gmail.com'
+git pull --rebase origin main 2>/dev/null || true
+git add hermes_data/ 2>/dev/null || true
+if ! git diff --cached --quiet 2>/dev/null; then
+  git commit -m "Auto-backup Hermes session & memory $(date -u '+%Y-%m-%d %H:%M:%S UTC')" 2>/dev/null
+  git push origin main 2>/dev/null && echo "✅ [hermes-sync] Memory & sessions uploaded to GitHub!"
+else
+  echo "✨ [hermes-sync] Up to date (no changes)."
+fi
+SYNC_SCRIPT
+chmod +x /usr/local/bin/hermes-sync
+
+# Launch silent 30s background auto-sync daemon
+echo "  -> Starting background auto-backup daemon (every 30s to GitHub)..."
+pkill -f "hermes_sync_daemon" 2>/dev/null || true
+nohup bash -c '
+while true; do
+  /usr/local/bin/hermes-sync >/dev/null 2>&1
+  sleep 30
+done
+' > /tmp/hermes_daemon.log 2>&1 &
 
 # 8. Deploy Marimo App
+echo "📱 [8/8] Deploying Marimo web app..."
 if [ -f "$(dirname "$0")/app.py" ]; then
   cp "$(dirname "$0")/app.py" /marimo/app.py
 else
@@ -228,8 +319,11 @@ fi
 echo ""
 echo "=========================================================================="
 echo "🎉 DEPLOYMENT COMPLETE! Qwen 3.8 Flash (180B) is LIVE on Blackwell GPU!"
-echo "📡 Server Endpoint:  http://127.0.0.1:8085/v1"
-echo "🧠 Context Window:    262,144 Tokens (YaRN RoPE + q8_0 KV Cache)"
-echo "🏛️ Hermes Agent:     Ready! Type 'hermes-agent' in terminal to run."
+echo "📡 Server Endpoint:    http://127.0.0.1:8085/v1"
+echo "🧠 Context Window:      262,144 Tokens (YaRN RoPE + q8_0 KV Cache)"
+echo "💾 Persistent Memory:  Restored from GitHub & Auto-Backing up every 30s!"
+echo "💬 Resume Chat:        Type 'hermes chat -c' or 'hermes -c' in terminal"
+echo "📂 List Past Sessions: Type 'hermes sessions list'"
+echo "⚡ Force Instant Save: Type 'hermes-sync'"
 echo "👉 Open /marimo/app.py in MoLab sidebar & click 'App View' to chat!"
 echo "=========================================================================="
