@@ -121,18 +121,28 @@ export CUDA_PATH="/usr/local/cuda"
 export PATH="/usr/local/cuda/bin:$PATH"
 export LD_LIBRARY_PATH="/usr/local/cuda/lib:/usr/local/cuda/lib64:$LD_LIBRARY_PATH"
 
-# 4. Compile llama.cpp for Blackwell sm_120 (Cached if present)
+# 4. Fast-Deploy Prebuilt Blackwell llama-server (sm_120 + MTP in ~3 seconds)
 echo "🔨 [4/8] Checking Blackwell-optimized llama-server with MTP (sm_120)..."
 if [ ! -f "/marimo/llama.cpp/build/bin/llama-server" ]; then
-  echo "  -> Fetching danielhanchen/llama.cpp (qwen4exp/mtp branch)..."
-  if [ ! -d "/marimo/llama.cpp/.git" ]; then
-    rm -rf /marimo/llama.cpp
-    git clone -b qwen4exp/mtp --single-branch https://github.com/danielhanchen/llama.cpp.git /marimo/llama.cpp
-  fi
-  cd /marimo/llama.cpp
+  mkdir -p /marimo/llama.cpp/build/bin
+  echo "  -> ⚡ Fast-downloading precompiled Blackwell MTP engine from GitHub Releases (~48 MB)..."
+  
+  RELEASE_ASSET_URL="https://api.github.com/repos/harshraj170304-ux/qwen-flash-blackwell-molab/releases/assets/548882571"
+  if curl -fsSL -H "Authorization: token $GH_TOKEN" -H "Accept: application/octet-stream" -L "$RELEASE_ASSET_URL" -o /tmp/llama-server-blackwell.tar.gz 2>/dev/null && [ -s /tmp/llama-server-blackwell.tar.gz ]; then
+    tar -xzf /tmp/llama-server-blackwell.tar.gz -C /marimo/llama.cpp/build/bin
+    rm -f /tmp/llama-server-blackwell.tar.gz
+    chmod +x /marimo/llama.cpp/build/bin/llama-* 2>/dev/null || true
+    echo "  ✅ Prebuilt Blackwell MTP engine deployed in 3 seconds!"
+  else
+    echo "  ⚠️ Prebuilt download failed or offline, compiling from source..."
+    if [ ! -d "/marimo/llama.cpp/.git" ]; then
+      rm -rf /marimo/llama.cpp
+      git clone -b qwen4exp/mtp --single-branch https://github.com/danielhanchen/llama.cpp.git /marimo/llama.cpp
+    fi
+    cd /marimo/llama.cpp
 
-  # Inject CCCL compiler check bypass into main CMakeLists.txt
-  python3 -c '
+    # Inject CCCL compiler check bypass into main CMakeLists.txt
+    python3 -c '
 import os
 main_p = "/marimo/llama.cpp/CMakeLists.txt"
 if os.path.exists(main_p):
@@ -142,20 +152,21 @@ if os.path.exists(main_p):
         with open(main_p, "w") as f: f.write(s)
 ' 2>/dev/null || true
 
-  echo "  -> Compiling llama-server with native Blackwell sm_120 kernels..."
-  rm -rf /marimo/llama.cpp/build
-  mkdir -p /marimo/llama.cpp/build
-  cd /marimo/llama.cpp
-  cmake -B build \
-    -DGGML_CUDA=ON \
-    -DCMAKE_CUDA_ARCHITECTURES=120 \
-    -DCUDAToolkit_ROOT=/usr/local/cuda \
-    -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc \
-    -DCMAKE_CUDA_FLAGS="-D_CCCL_DISABLE_CUDA_COMPILER_CHECK=1" \
-    -DCMAKE_CXX_FLAGS="-D_CCCL_DISABLE_CUDA_COMPILER_CHECK=1" \
-    -DCMAKE_C_FLAGS="-D_CCCL_DISABLE_CUDA_COMPILER_CHECK=1"
-  nice -n 10 cmake --build build -j10 --target llama-server
-  cd /marimo
+    echo "  -> Compiling llama-server with native Blackwell sm_120 kernels..."
+    rm -rf /marimo/llama.cpp/build
+    mkdir -p /marimo/llama.cpp/build
+    cd /marimo/llama.cpp
+    cmake -B build \
+      -DGGML_CUDA=ON \
+      -DCMAKE_CUDA_ARCHITECTURES=120 \
+      -DCUDAToolkit_ROOT=/usr/local/cuda \
+      -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc \
+      -DCMAKE_CUDA_FLAGS="-D_CCCL_DISABLE_CUDA_COMPILER_CHECK=1" \
+      -DCMAKE_CXX_FLAGS="-D_CCCL_DISABLE_CUDA_COMPILER_CHECK=1" \
+      -DCMAKE_C_FLAGS="-D_CCCL_DISABLE_CUDA_COMPILER_CHECK=1"
+    nice -n 10 cmake --build build -j10 --target llama-server
+    cd /marimo
+  fi
 else
   echo "  ✅ Cached llama-server found at /marimo/llama.cpp/build/bin/llama-server!"
 fi
