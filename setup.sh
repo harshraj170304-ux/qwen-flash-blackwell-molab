@@ -171,21 +171,56 @@ else
   echo "  ✅ Cached llama-server found at /marimo/llama.cpp/build/bin/llama-server!"
 fi
 
-# 5. Download 98.4GB Qwen 3.8 Flash Next Uncensored + Vision Projector + MTP Draft Head
-echo "📥 [5/8] Checking Qwen3.8-Flash-Next-Uncensored Model & MTP Head..."
-MODEL_DIR="/marimo/models/Qwen3.8-Flash-Next-Uncensored-IQ4XS"
-MODEL_FILE="$MODEL_DIR/Qwen3.8-Flash-Next-Uncensored-IQ4XS-NGQ4.gguf"
-MMPROJ_FILE="$MODEL_DIR/mmproj-Qwen3.8-Flash-Next-Uncensored-BF16.gguf"
+# 5. Download Huihui Qwen 3.8 Flash Next Abliterated (111.3 GB UD-Q4_K_XL) + Vision Projector + MTP Draft Head
+echo "📥 [5/8] Checking Huihui Qwen 3.8 Flash Next Abliterated Model & MTP Head..."
+MODEL_DIR="/marimo/models/huihui-qwen"
+MODEL_FILE="$MODEL_DIR/UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf"
+MMPROJ_FILE="$MODEL_DIR/mmproj-model-bf16.gguf"
 MTP_DIR="/marimo/models/mtp"
 MTP_FILE="$MTP_DIR/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf"
 mkdir -p "$MODEL_DIR" "$MTP_DIR"
 
-if [ ! -f "$MODEL_FILE" ] || [ ! -f "$MMPROJ_FILE" ]; then
-  echo "  -> Fast downloading Qwen3.8-Flash-Next-Uncensored via huggingface-cli..."
-  hf download cygnal/Qwen3.8-Flash-Next-Uncensored-IQ4XS-NGQ4-GGUF \
-    --local-dir "$MODEL_DIR"
+# Reuse existing vision projector if already downloaded in previous sessions
+if [ ! -f "$MMPROJ_FILE" ] && [ -f "/marimo/models/Qwen3.8-Flash-Next-Uncensored-IQ4XS/mmproj-Qwen3.8-Flash-Next-Uncensored-BF16.gguf" ]; then
+  MMPROJ_FILE="/marimo/models/Qwen3.8-Flash-Next-Uncensored-IQ4XS/mmproj-Qwen3.8-Flash-Next-Uncensored-BF16.gguf"
+fi
+
+if [ ! -f "$MODEL_FILE" ]; then
+  echo "  -> ⚡ Fast downloading Huihui Qwen3.8 Flash Next Abliterated UD-Q4_K_XL (~111.3 GB)..."
+  HF_XET_HIGH_PERFORMANCE=1 hf download huihui-ai/Huihui-Qwen3.8-Flash-Next-abliterated-GGUF \
+    --include "UD-Q4_K_XL/*" \
+    --local-dir "$MODEL_DIR" || \
+  python3 -c "
+import os
+from huggingface_hub import snapshot_download
+os.environ['HF_XET_HIGH_PERFORMANCE'] = '1'
+snapshot_download(
+    repo_id='huihui-ai/Huihui-Qwen3.8-Flash-Next-abliterated-GGUF',
+    allow_patterns='UD-Q4_K_XL/*',
+    local_dir='$MODEL_DIR'
+)
+"
 else
-  echo "  ✅ Model and Vision Projector already cached on disk!"
+  echo "  ✅ Huihui UD-Q4_K_XL Model shards already cached on disk!"
+fi
+
+if [ ! -f "$MMPROJ_FILE" ]; then
+  echo "  -> Downloading Multimodal Vision Projector..."
+  HF_XET_HIGH_PERFORMANCE=1 hf download huihui-ai/Huihui-Qwen3.8-Flash-Next-abliterated-GGUF \
+    mmproj-model-bf16.gguf \
+    --local-dir "$MODEL_DIR" || \
+  python3 -c "
+import os
+from huggingface_hub import hf_hub_download
+os.environ['HF_XET_HIGH_PERFORMANCE'] = '1'
+hf_hub_download(
+    repo_id='huihui-ai/Huihui-Qwen3.8-Flash-Next-abliterated-GGUF',
+    filename='mmproj-model-bf16.gguf',
+    local_dir='$MODEL_DIR'
+)
+"
+else
+  echo "  ✅ Vision Projector already cached on disk!"
 fi
 
 if [ ! -f "$MTP_FILE" ]; then
