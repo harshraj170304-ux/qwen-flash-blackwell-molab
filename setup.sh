@@ -189,11 +189,23 @@ else
 fi
 
 if [ ! -f "$MTP_FILE" ]; then
-  echo "  -> Downloading Qwen 3.8 MTP shared draft head (~2.6 GB)..."
-  wget -q --show-progress -O "$MTP_FILE" \
-    https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/main/MTP/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf || \
-  curl -L -o "$MTP_FILE" \
-    https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/main/MTP/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf
+  echo "  -> ⚡ Fast multi-stream downloading Qwen 3.8 MTP shared draft head (~2.6 GB)..."
+  if command -v aria2c >/dev/null 2>&1; then
+    aria2c -q --console-log-level=error -x 16 -s 16 -k 1M -d "$MTP_DIR" -o "mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf" \
+      "https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/main/MTP/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf" || true
+  fi
+  if [ ! -s "$MTP_FILE" ]; then
+    hf download unsloth/Qwen3.8-Flash-Next-GGUF \
+      MTP/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf \
+      --local-dir "$MTP_DIR" 2>/dev/null || true
+    [ -f "$MTP_DIR/MTP/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf" ] && mv "$MTP_DIR/MTP/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf" "$MTP_FILE" 2>/dev/null || true
+  fi
+  if [ ! -s "$MTP_FILE" ]; then
+    wget -q --show-progress -O "$MTP_FILE" \
+      "https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/main/MTP/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf" || \
+    curl -L -o "$MTP_FILE" \
+      "https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/main/MTP/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf"
+  fi
 else
   echo "  ✅ MTP shared draft head already cached on disk!"
 fi
