@@ -20,8 +20,8 @@ cat << 'EOF' > ~/.tmux.conf
 set -g mouse on
 set -s set-clipboard on
 set -g history-limit 50000
-bind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel
-bind-key -T copy-mode MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel
+unbind-key -T copy-mode-vi MouseDragEnd1Pane
+unbind-key -T copy-mode MouseDragEnd1Pane
 EOF
 
 # 2. Python high-speed packages
@@ -122,12 +122,12 @@ export PATH="/usr/local/cuda/bin:$PATH"
 export LD_LIBRARY_PATH="/usr/local/cuda/lib:/usr/local/cuda/lib64:$LD_LIBRARY_PATH"
 
 # 4. Compile llama.cpp for Blackwell sm_120 (Cached if present)
-echo "🔨 [4/6] Checking Blackwell-optimized llama-server (sm_120)..."
+echo "🔨 [4/8] Checking Blackwell-optimized llama-server with MTP (sm_120)..."
 if [ ! -f "/marimo/llama.cpp/build/bin/llama-server" ]; then
-  echo "  -> Fetching danielhanchen/llama.cpp (qwen4exp branch)..."
+  echo "  -> Fetching danielhanchen/llama.cpp (qwen4exp/mtp branch)..."
   if [ ! -d "/marimo/llama.cpp/.git" ]; then
     rm -rf /marimo/llama.cpp
-    git clone -b qwen4exp/qwen3.8-flash-next --single-branch https://github.com/danielhanchen/llama.cpp.git /marimo/llama.cpp
+    git clone -b qwen4exp/mtp --single-branch https://github.com/danielhanchen/llama.cpp.git /marimo/llama.cpp
   fi
   cd /marimo/llama.cpp
 
@@ -154,18 +154,20 @@ if os.path.exists(main_p):
     -DCMAKE_CUDA_FLAGS="-D_CCCL_DISABLE_CUDA_COMPILER_CHECK=1" \
     -DCMAKE_CXX_FLAGS="-D_CCCL_DISABLE_CUDA_COMPILER_CHECK=1" \
     -DCMAKE_C_FLAGS="-D_CCCL_DISABLE_CUDA_COMPILER_CHECK=1"
-  cmake --build build -j$(nproc) --target llama-server
+  nice -n 10 cmake --build build -j10 --target llama-server
   cd /marimo
 else
   echo "  ✅ Cached llama-server found at /marimo/llama.cpp/build/bin/llama-server!"
 fi
 
-# 5. Download 98.4GB Qwen 3.8 Flash Next Uncensored + Vision Projector
-echo "📥 [5/6] Checking Qwen3.8-Flash-Next-Uncensored-IQ4XS Model (~98.4 GB)..."
+# 5. Download 98.4GB Qwen 3.8 Flash Next Uncensored + Vision Projector + MTP Draft Head
+echo "📥 [5/8] Checking Qwen3.8-Flash-Next-Uncensored Model & MTP Head..."
 MODEL_DIR="/marimo/models/Qwen3.8-Flash-Next-Uncensored-IQ4XS"
 MODEL_FILE="$MODEL_DIR/Qwen3.8-Flash-Next-Uncensored-IQ4XS-NGQ4.gguf"
 MMPROJ_FILE="$MODEL_DIR/mmproj-Qwen3.8-Flash-Next-Uncensored-BF16.gguf"
-mkdir -p "$MODEL_DIR"
+MTP_DIR="/marimo/models/mtp"
+MTP_FILE="$MTP_DIR/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf"
+mkdir -p "$MODEL_DIR" "$MTP_DIR"
 
 if [ ! -f "$MODEL_FILE" ] || [ ! -f "$MMPROJ_FILE" ]; then
   echo "  -> Fast downloading Qwen3.8-Flash-Next-Uncensored via huggingface-cli..."
@@ -175,18 +177,33 @@ else
   echo "  ✅ Model and Vision Projector already cached on disk!"
 fi
 
-# 6. Launch llama-server with 256K Context on Safe Port 8085
-echo "🚀 [6/6] Launching Qwen 3.8 Flash Server on 95GB Blackwell GPU (Port 8085)..."
+if [ ! -f "$MTP_FILE" ]; then
+  echo "  -> Downloading Qwen 3.8 MTP shared draft head (~2.6 GB)..."
+  wget -q --show-progress -O "$MTP_FILE" \
+    https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/main/MTP/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf || \
+  curl -L -o "$MTP_FILE" \
+    https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/main/MTP/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf
+else
+  echo "  ✅ MTP shared draft head already cached on disk!"
+fi
+
+# 6. Launch llama-server with Qwen 3.8 MTP on Safe Port 8085 (105 tok/s peak)
+echo "🚀 [6/8] Launching Qwen 3.8 Flash Server with MTP on 95GB Blackwell GPU (Port 8085)..."
 pkill -9 -f "llama-server" 2>/dev/null || true
 tmux kill-session -t qwen 2>/dev/null || true
+sleep 2
 
 tmux new-session -d -s qwen "bash -c '
   export LD_LIBRARY_PATH=/usr/local/cuda/lib:/usr/local/cuda/lib64:\$LD_LIBRARY_PATH
   /marimo/llama.cpp/build/bin/llama-server \
     --model \"$MODEL_FILE\" \
+    --model-draft \"$MTP_FILE\" \
+    --spec-type draft-mtp \
+    --spec-draft-n-max 2 \
+    --n-gpu-layers 99 \
+    --n-gpu-layers-draft 99 \
     --mmproj \"$MMPROJ_FILE\" \
     --host 127.0.0.1 --port 8085 \
-    --n-gpu-layers 48 \
     --flash-attn on \
     --cache-type-k q8_0 \
     --cache-type-v q8_0 \
@@ -198,6 +215,10 @@ tmux new-session -d -s qwen "bash -c '
     --jinja;
   exec bash
 '"
+
+echo "⏳ Starting server with Qwen 3.8 MTP (8 seconds)..."
+sleep 8
+tmux capture-pane -pt qwen -S -25 2>/dev/null || true
 
 # 7. Restore Hermes Memory, Sessions & 2-Way Auto-Backup Engine
 echo "🏛️ [7/8] Setting up Hermes Agent & Restoring Permanent Memory from GitHub..."
